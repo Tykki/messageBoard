@@ -1,8 +1,10 @@
 import { Link } from "react-router";
 import { useUser } from "~/lib/sessionContext";
+import UserMenu from "~/userMenu";
+import Login from "~/login";
 
 export default function Navbar() {
-  const { session, profile, } = useUser()
+  const { session, profile, loading } = useUser()
   return (
     <>
       <nav className="nav-bar">
@@ -22,7 +24,7 @@ export default function Navbar() {
             </Link>
           </li>
           <li className="nav-auth-item">
-            {session?.user ? 'user is logged in' : 'user is logged out'}
+            {!loading ? (session?.user ? <UserMenu /> : <Login />) : '...'}
           </li>
         </ul>
       </nav>

@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import type { Session, RealtimeChannel } from "@supabase/supabase-js";
-import { supaClient } from "../lib/supaClient";
+import { supaClient } from "~/lib/supaClient";
+import { useNavigate } from "react-router";
 
 export interface UserProfile {
   username: string;
@@ -13,6 +14,10 @@ export interface UserInfo {
   loading: boolean;
 }
 
+export const setReturnPath = () => {
+  localStorage.setItem("returnPath", window.location.pathname);
+};
+
 export function useSession(): UserInfo {
   const [userInfo, setUserInfo] = useState<UserInfo>({
     session: null,
@@ -21,6 +26,7 @@ export function useSession(): UserInfo {
   });
 
   const channelRef = useRef<RealtimeChannel | null>(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     // 1. Unified Auth Listener (Handles initial check + all changes)
@@ -47,6 +53,9 @@ export function useSession(): UserInfo {
 
       if (data) {
         setUserInfo((prev) => ({ ...prev, profile: data as UserProfile, loading: false }));
+      } else {
+        setReturnPath()
+        navigate('/welcome')
       }
 
       // 3. Setup Realtime Listener
