@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
+import { createBrowserClient } from "@supabase/ssr";
 import type { Database } from "./database.types"; 
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_API_URL;
@@ -8,5 +8,10 @@ if (!supabaseUrl || !supabaseKey) {
   throw new Error("Missing Supabase Environment Variables");
 }
 
+/**
+ * Modern SSR-compatible Supabase Client
+ * Automatically syncs auth state with cookies for React Router Loaders
+ */
+
 // Pass <Database> here if you have generated types
-export const supaClient = createClient<Database>(supabaseUrl, supabaseKey);
+export const supaClient = createBrowserClient<Database>(supabaseUrl, supabaseKey);

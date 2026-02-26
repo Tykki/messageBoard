@@ -32,7 +32,7 @@ export function useSession(): UserInfo {
     // 1. Unified Auth Listener (Handles initial check + all changes)
     const { data: { subscription } } = supaClient.auth.onAuthStateChange(
       async (event, session) => {
-        setUserInfo((prev) => ({ ...prev, session, loading: !session }));
+        setUserInfo((prev) => ({ ...prev, session, loading: !!session }));
 
         if (session?.user) {
           await fetchAndListenToProfile(session.user.id);
@@ -54,8 +54,13 @@ export function useSession(): UserInfo {
       if (data) {
         setUserInfo((prev) => ({ ...prev, profile: data as UserProfile, loading: false }));
       } else {
-        setReturnPath()
-        navigate('/welcome')
+        // 2. FIXED: Prevent Infinite Redirect Loop
+        // Only navigate if we aren't already there
+        if (window.location.pathname !== "/welcome") {
+          setReturnPath();
+          navigate("/welcome");
+        }
+        setUserInfo((prev) => ({ ...prev, loading: false }));
       }
 
       // 3. Setup Realtime Listener
@@ -92,7 +97,7 @@ export function useSession(): UserInfo {
       subscription.unsubscribe();
       stopListening();
     };
-  }, []);
+  }, [navigate]);
 
   return userInfo;
 }
