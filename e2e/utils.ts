@@ -48,8 +48,12 @@ export async function signUp(
   const passwordInput = page.locator('input[name="password"]');
   await passwordInput.fill(password);
   await page.keyboard.press("Enter");
+  // 1. WAIT FOR NAVIGATION: Tell Playwright to wait for the URL change
+  // This gives your useSession hook time to fetch the profile and navigate
+  // await page.waitForURL("**/welcome", { timeout: 10000 });
   const welcomeNotice = page.locator("h2", { hasText: "Welcome to Supaship!" });
-  await expect(welcomeNotice).toHaveCount(1);
+  // await expect(welcomeNotice).toHaveCount(1);
+  await expect(welcomeNotice).toBeVisible();
   if (skipUserName) {
     return;
   }
