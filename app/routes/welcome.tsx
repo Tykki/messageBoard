@@ -1,8 +1,9 @@
 import { Form, redirect, useActionData, useNavigation } from "react-router";
 import type { Route } from "./+types/welcome";
-import { supaClient } from "../lib/supaClient";
 import Dialog from "../dialog";
 import { getSupaServer } from "~/lib/supaServer";
+// import { supaClient } from "../lib/supaClient";
+// import { useState } from "react";
 
 /**
  * 1. THE LOADER (Guard Duty)
@@ -23,7 +24,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     .from("user_profiles")
     .select("username")
     .eq("user_id", user.id)
-    .single();
+    .maybeSingle();
 
   // If they already have a username, they don't belong here
   if (data?.username) return redirect("/", {headers});
@@ -62,7 +63,6 @@ export async function loader({ request }: Route.LoaderArgs) {
 export async function action({ request }: Route.ActionArgs) {
   const {supaServer, headers} = getSupaServer(request)
   const formData = await request.formData();
-  const username = formData.get("username") as string;
   // 1. Get the user
   const { data: { user } } = await supaServer.auth.getUser();
 
@@ -72,19 +72,64 @@ export async function action({ request }: Route.ActionArgs) {
     return redirect("/", { headers });
   }
 
+  /**
+   * Extract username from submitted form.
+   * We must verify it is actually a string.
+   */
+  const raw = formData.get("username");
+
+  if (typeof raw !== "string") {
+    return { error: "Invalid submission." };
+  }
+
+  // Remove accidental whitespace
+  const username = raw.trim();
+
+  /**
+   * -----------------------------
+   * Server-side Validation Rules
+   * -----------------------------
+   * These mirror the browser rules,
+   * but are required for security.
+   */
+
+  if (username.length < 3) {
+    return { error: "Username must be at least 3 characters long." };
+  }
+
+  if (username.length > 15) {
+    return { error: "Username must be less than 15 characters long." };
+  }
+
+  if (!/^[a-zA-Z0-9_]+$/.test(username)) {
+    return {
+      error:
+        "Username can only contain letters, numbers, and underscores.",
+    };
+  }
+
+  /**
+   * Insert into database.
+   *
+   * .select() is important:
+   * It forces PostgREST to return proper errors
+   * (like unique constraint violations).
+   */
+
   // Final Server-side Database Insert
   const { error } = await supaServer.from("user_profiles").insert(
     {
-      user_id: user?.id,
+      user_id: user.id,
       username: username,
     },
-  );
+  ).select();
 
   // Handle the "Unique Violation" error (Postgres error code 23505)
   if (error) {
     if (error.code === "23505") {
       return { error: `Username "${username}" is already taken` };
     }
+    console.log(error)
     return { error: "An unexpected error occurred. Please try again." };
   }
 
@@ -103,6 +148,14 @@ export default function Welcome() {
   // Use navigation state to show a "Loading..." spinner on the button
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
+  // 2. Handle input changes to check validity
+  // const [isValid, setIsValid] = useState(false)
+  // const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    // checkValidity() triggers the browser's built-in validation logic
+    // setIsValid(e.currentTarget.form?.checkValidity() ?? false);
+    // setIsValid((e.currentTarget.form?.length !== 0));
+
+  // };
 
   return (
     <Dialog
@@ -128,8 +181,8 @@ export default function Welcome() {
               className="welcome-name-input p-2 border rounded"
               autoFocus
               required                  // Browser-level validation: Can't be empty
-              minLength={3}             // Browser-level validation: Min length
-              maxLength={15}            // Browser-level validation: Max length
+              minLength={4}             // Browser-level validation: Min length
+              maxLength={14}            // Browser-level validation: Max length
               pattern="^[a-zA-Z0-9_]+$" // Browser-level validation: Regex for chars
             />
 

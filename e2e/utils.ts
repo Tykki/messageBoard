@@ -41,29 +41,39 @@ export async function signUp(
   userName: string,
   skipUserName = false
 ) {
-  const signUpButton = page.locator("button", { hasText: "Sign Up" }).first();
-  await signUpButton.click();
-  const emailInput = page.locator('input[name="email"]');
-  await emailInput.fill(email);
-  const passwordInput = page.locator('input[name="password"]');
-  await passwordInput.fill(password);
+  // const signUpButton = page.locator("button", { hasText: "Sign Up" }).first();
+  // await signUpButton.click();
+  // const emailInput = page.locator('input[name="email"]');
+  // await emailInput.fill(email);
+  // const passwordInput = page.locator('input[name="password"]');
+  // await passwordInput.fill(password);
+  await page.getByRole("button", { name: "Sign Up" }).click();
+
+  await page.getByRole("textbox", { name: /email/i }).fill(email);
+  await page.getByRole("textbox", { name: /password/i }).fill(password);
+
   await page.keyboard.press("Enter");
-  // 1. WAIT FOR NAVIGATION: Tell Playwright to wait for the URL change
-  // This gives your useSession hook time to fetch the profile and navigate
-  // await page.waitForURL("**/welcome", { timeout: 10000 });
-  const welcomeNotice = page.locator("h2", { hasText: "Welcome to Supaship!" });
-  // await expect(welcomeNotice).toHaveCount(1);
-  await expect(welcomeNotice).toBeVisible();
-  if (skipUserName) {
-    return;
-  }
-  const usernameInput = page.locator('input[name="username"]');
-  await usernameInput.fill(userName);
-  const submitButton = page.locator("button", { hasText: "Submit" });
-  await expect(submitButton).toBeEnabled();
-  await page.keyboard.press("Enter");
-  const logoutButton = page.locator("button", { hasText: "Logout" });
-  await expect(logoutButton).toHaveCount(1);
+  await expect(page).toHaveURL("/welcome");
+  
+  if (skipUserName) return;
+
+  const input = page.getByRole("textbox", { name: "Username" });
+  await input.fill(userName);
+
+  await page.getByRole("button", { name: "Submit" }).click();
+
+  await expect(page).toHaveURL("/");
+  await expect(
+    page.getByRole("button", { name: "Logout" })
+  ).toBeVisible();
+
+  // const usernameInput = page.locator('input[name="username"]');
+  // await usernameInput.fill(userName);
+  // const submitButton = page.locator("button", { hasText: "Submit" });
+  // await expect(submitButton).toBeEnabled();
+  // await page.keyboard.press("Enter");
+  // const logoutButton = page.locator("button", { hasText: "Logout" });
+  // await expect(logoutButton).toHaveCount(1);
 }
 
 export async function login(
@@ -71,21 +81,33 @@ export async function login(
   email: string,
   password: string,
   username: string,
-  loginButtonSelector = "button"
+  // loginButtonSelector = "button"
 ) {
-  const signUpButton = page
-    .locator(loginButtonSelector, { hasText: "Login" })
-    .first();
-  await signUpButton.click();
-  const emailInput = page.locator('input[name="email"]');
-  await emailInput.fill(email);
-  const passwordInput = page.locator('input[name="password"]');
-  await passwordInput.fill(password);
+  await page.getByRole("button", { name: "Login" }).click();
+
+  await page.getByRole("textbox", { name: /email/i }).fill(email);
+  await page.getByRole("textbox", { name: /password/i }).fill(password);
+
   await page.keyboard.press("Enter");
-  const logoutButton = page.locator("button", { hasText: "Logout" });
-  await expect(logoutButton).toHaveCount(1);
-  const usernameMention = page.locator("h2", { hasText: username });
-  await expect(usernameMention).toHaveCount(1);
+
+  await expect(
+    page.getByRole("button", { name: "Logout" })
+  ).toBeVisible();
+
+  await expect(page.getByRole("heading", { name: username })).toBeVisible();
+  // const signUpButton = page
+  //   .locator(loginButtonSelector, { hasText: "Login" })
+  //   .first();
+  // await signUpButton.click();
+  // const emailInput = page.locator('input[name="email"]');
+  // await emailInput.fill(email);
+  // const passwordInput = page.locator('input[name="password"]');
+  // await passwordInput.fill(password);
+  // await page.keyboard.press("Enter");
+  // const logoutButton = page.locator("button", { hasText: "Logout" });
+  // await expect(logoutButton).toHaveCount(1);
+  // const usernameMention = page.locator("h2", { hasText: username });
+  // await expect(usernameMention).toHaveCount(1);
 }
 
 export async function createPost(page: Page, title: string, contents: string) {
@@ -99,4 +121,13 @@ export async function createPost(page: Page, title: string, contents: string) {
   const post = page.locator("h3", { hasText: title });
   await expect(post).toHaveCount(1);
   return post;
+}
+
+export async function createComment(page: Page, comment: string) {
+  const commentInput = page.locator(`textarea[name="comment"]`);
+  const commentSubmitButton = page.locator(`button[type="submit"]`);
+  await commentInput.fill(comment);
+  await commentSubmitButton.click();
+  const createdComment = page.locator("p", { hasText: comment });
+  await expect(createdComment).toHaveCount(1);
 }
