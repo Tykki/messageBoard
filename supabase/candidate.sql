@@ -1,429 +1,518 @@
-/* ============================================================
-   EXTENSIONS (Modern PostgreSQL Setup)
-   ============================================================ */
+---------------------------------------------------------------------
+-- EXTENSIONS
+---------------------------------------------------------------------
 
-/*
-  pgcrypto provides gen_random_uuid().
+-- ltree enables hierarchical tree paths used for comment threads
+-- Example:
+-- root.post.comment
+-- It provides operators like <@ to query descendants efficiently
+CREATE EXTENSION IF NOT EXISTS ltree;
 
-  Modern PostgreSQL (13+) recommends using this
-  instead of uuid-ossp.
 
-  Why?
-  - uuid-ossp is older and largely legacy.
-  - gen_random_uuid() is cryptographically secure.
-  - Simpler dependency footprint.
-  - Preferred by PostgreSQL maintainers.
-*/
-create extension if not exists pgcrypto;
 
+---------------------------------------------------------------------
+-- CUSTOM TYPES
+---------------------------------------------------------------------
 
-/* ============================================================
-   USER PROFILES
-   ============================================================ */
+-- ENUM type for votes.
+-- This prevents invalid values such as:
+-- 'UP', 'like', 'yes', etc.
+-- Only 'up' or 'down' are allowed.
 
-/*
-  user_profiles extends Supabase's auth.users table.
+CREATE TYPE vote_type_enum AS ENUM ('up', 'down');
 
-  We NEVER modify auth.users directly.
-  Instead, we create a 1:1 table in public schema
-  for application-specific profile data.
-*/
 
-create table user_profiles (
 
-  /*
-    user_id:
-    - Primary key
-    - Foreign key to auth.users
-    - Enforces 1:1 relationship
+---------------------------------------------------------------------
+-- USER PROFILES TABLE
+---------------------------------------------------------------------
 
-    on delete cascade:
-    If the auth user is deleted,
-    the profile is automatically deleted.
-  */
-  user_id uuid primary key
-    references auth.users (id)
-    on delete cascade
-    not null,
+CREATE TABLE user_profiles (
 
-  /*
-    username:
-    - Public identifier
-    - Must be unique
-    - Required
-  */
-  username text not null unique,
+  -- user id from Supabase authentication
+  user_id UUID PRIMARY KEY
+  REFERENCES auth.users (id)
+  ON DELETE CASCADE
+  NOT NULL,
 
-  /*
-    Regex enforces only:
-    letters, numbers, underscore.
-  */
-  constraint proper_username
-    check (username ~ '^[a-zA-Z0-9_]+$'),
+  -- public username
+  username TEXT UNIQUE NOT NULL,
 
-  /*
-    Length must be between 3–15 inclusive.
-    BETWEEN is clearer than > and < checks.
-  */
-  constraint username_length
-    check (char_length(username) between 3 and 15)
-);
+  -- enforce valid characters
+  CONSTRAINT proper_username
+  CHECK (username ~* '^[a-zA-Z0-9_]+$'),
 
-/*
-  UNIQUE already creates an index,
-  but explicit index naming improves clarity
-  when reading execution plans.
-*/
-create index idx_user_profiles_username
-  on user_profiles(username);
-
-
-
-/* ============================================================
-   POSTS (ROOT POSTS + COMMENTS)
-   ============================================================ */
-
-/*
-  This table stores BOTH:
-  - Top-level posts
-  - Comments
-
-  We differentiate using the ltree path.
-*/
-
-create table posts (
-
-  /*
-    Modern UUID generation.
-    gen_random_uuid() comes from pgcrypto.
-  */
-  id uuid primary key
-    default gen_random_uuid(),
-
-  /*
-    Owner of post/comment.
-    If user is deleted → cascade removes posts.
-  */
-  user_id uuid not null
-    references auth.users (id)
-    on delete cascade,
-
-  /*
-    timestamptz always preferred.
-    Avoid plain timestamp in distributed systems.
-  */
-  created_at timestamptz not null
-    default now(),
-
-  /*
-    ltree path example:
-
-      root
-      root.abcd1234
-      root.abcd1234.efgh5678
-
-    Enables Reddit-style threaded comments
-    without recursive CTEs.
-  */
-  path ltree not null
-);
-
-/*
-  Required for fast hierarchical queries.
-  GIST index supports ltree operators like <@.
-*/
-create index idx_posts_path
-  on posts using gist(path);
-
-/*
-  Helps sorting by newest.
-*/
-create index idx_posts_created_at
-  on posts(created_at desc);
-
-
-
-/* ============================================================
-   POST CONTENT
-   ============================================================ */
-
-/*
-  Content separated from posts for scalability.
-
-  Why separate?
-  - Enables version history in future
-  - Allows content moderation systems
-  - Cleaner separation of structural vs text data
-*/
-
-create table post_contents (
-
-  id uuid primary key
-    default gen_random_uuid(),
-
-  post_id uuid not null
-    references posts (id)
-    on delete cascade,
-
-  /*
-    Stored redundantly for easier RLS.
-    Avoids complex joins in policy checks.
-  */
-  user_id uuid not null
-    references auth.users (id)
-    on delete cascade,
-
-  title text,
-  content text,
-
-  created_at timestamptz not null
-    default now()
-);
-
-create index idx_post_contents_post_id
-  on post_contents(post_id);
-
-
-
-/* ============================================================
-   POST SCORE (DENORMALIZED AGGREGATE)
-   ============================================================ */
-
-/*
-  This stores computed vote totals.
-
-  Why not compute on read?
-  Because:
-  - SUM() across millions of votes is slow.
-  - Sorting by score would require aggregation each time.
-  - Denormalization is common in ranking systems.
-*/
-
-create table post_score (
-
-  post_id uuid primary key
-    references posts (id)
-    on delete cascade,
-
-  score integer not null default 0
-);
-
-create index idx_post_score_score
-  on post_score(score desc);
-
-
-
-/* ============================================================
-   VOTES
-   ============================================================ */
-
-/*
-  ENUM prevents invalid vote types.
-  Better than text because:
-  - Smaller storage
-  - Safer constraints
-  - Clearer intent
-*/
-
-create type vote_enum as enum ('up', 'down');
-
-create table post_votes (
-
-  id uuid primary key
-    default gen_random_uuid(),
-
-  post_id uuid not null
-    references posts (id)
-    on delete cascade,
-
-  user_id uuid not null
-    references auth.users (id)
-    on delete cascade,
-
-  vote_type vote_enum not null,
-
-  /*
-    Prevent duplicate voting.
-  */
-  unique (post_id, user_id)
-);
-
-create index idx_post_votes_post_id
-  on post_votes(post_id);
-
-
-
-/* ============================================================
-   TRIGGER: INITIALIZE SCORE
-   ============================================================ */
-
-/*
-  Automatically creates a score row
-  whenever a post is inserted.
-
-  This guarantees:
-  Every post always has exactly one score row.
-*/
-
-create function initialize_post_score()
-returns trigger
-language plpgsql
-security definer
-set search_path = public
-as $$
-begin
-  insert into post_score (post_id, score)
-  values (new.id, 0);
-
-  return new;
-end;
-$$;
-
-create trigger trg_initialize_post_score
-after insert on posts
-for each row
-execute procedure initialize_post_score();
-
-
-
-/* ============================================================
-   TRIGGER: UPDATE SCORE ON VOTE CHANGE
-   ============================================================ */
-
-/*
-  Handles:
-  - INSERT vote
-  - UPDATE vote
-  - DELETE vote
-
-  coalesce(new, old) ensures
-  we handle DELETE properly.
-*/
-
-create function update_post_score()
-returns trigger
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  affected_post uuid;
-begin
-  affected_post := coalesce(new.post_id, old.post_id);
-
-  update post_score
-  set score = (
-    select coalesce(
-      sum(case when vote_type = 'up' then 1 else -1 end),
-      0
-    )
-    from post_votes
-    where post_id = affected_post
+  -- enforce length
+  CONSTRAINT username_length
+  CHECK (
+      char_length(username) > 3
+      AND char_length(username) < 15
   )
-  where post_id = affected_post;
+);
 
-  return coalesce(new, old);
-end;
+
+
+---------------------------------------------------------------------
+-- POSTS TABLE
+---------------------------------------------------------------------
+
+CREATE TABLE posts (
+
+    -- time-ordered UUID improves index locality
+    id UUID PRIMARY KEY DEFAULT uuidv7() NOT NULL,
+
+    -- author
+    user_id UUID NOT NULL
+    REFERENCES auth.users (id),
+
+    -- creation timestamp
+    created_at TIMESTAMPTZ DEFAULT now() NOT NULL,
+
+    -- hierarchical comment path
+    path LTREE NOT NULL
+);
+
+
+
+---------------------------------------------------------------------
+-- PERFORMANCE INDEXES (NEW)
+---------------------------------------------------------------------
+
+-- Index posts by creation date for feed queries
+CREATE INDEX idx_posts_created_at
+ON posts (created_at DESC);
+
+-- Index posts by user for profile queries
+CREATE INDEX idx_posts_user
+ON posts (user_id);
+
+-- GIST index required for efficient ltree path operations
+-- This dramatically speeds up queries like:
+-- path <@ 'root.post'
+CREATE INDEX idx_posts_path_gist
+ON posts
+USING GIST (path);
+
+
+
+---------------------------------------------------------------------
+-- POST SCORE TABLE
+---------------------------------------------------------------------
+
+CREATE TABLE post_score (
+
+    post_id UUID PRIMARY KEY
+    REFERENCES posts (id),
+
+    score INTEGER NOT NULL
+);
+
+-- Index used when sorting posts by score
+CREATE INDEX idx_post_score_value
+ON post_score (score DESC);
+
+
+
+---------------------------------------------------------------------
+-- POST CONTENT TABLE
+---------------------------------------------------------------------
+
+CREATE TABLE post_contents (
+
+    id UUID PRIMARY KEY DEFAULT uuidv7() NOT NULL,
+
+    user_id UUID NOT NULL
+    REFERENCES auth.users (id),
+
+    post_id UUID NOT NULL
+    REFERENCES posts (id),
+
+    title TEXT,
+
+    content TEXT,
+
+    created_at TIMESTAMPTZ DEFAULT now() NOT NULL
+);
+
+-- Index to quickly retrieve content for posts
+CREATE INDEX idx_post_contents_post_id
+ON post_contents (post_id);
+
+
+
+---------------------------------------------------------------------
+-- POST VOTES TABLE
+---------------------------------------------------------------------
+
+CREATE TABLE post_votes (
+
+    id UUID PRIMARY KEY DEFAULT uuidv7() NOT NULL,
+
+    post_id UUID NOT NULL
+    REFERENCES posts (id),
+
+    user_id UUID NOT NULL
+    REFERENCES auth.users (id),
+
+    -- ENUM instead of TEXT prevents invalid values
+    vote_type vote_type_enum NOT NULL,
+
+    -- prevents duplicate votes
+    UNIQUE (post_id, user_id)
+);
+
+-- Index used to aggregate vote totals faster
+CREATE INDEX idx_post_votes_post
+ON post_votes (post_id);
+
+
+
+---------------------------------------------------------------------
+-- TRIGGER FUNCTION: UPDATE POST SCORE
+---------------------------------------------------------------------
+
+CREATE FUNCTION update_post_score()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $update_post_score$
+BEGIN
+
+    UPDATE post_score
+    SET score = (
+        SELECT SUM(
+            CASE
+                WHEN vote_type = 'up' THEN 1
+                ELSE -1
+            END
+        )
+        FROM post_votes
+        WHERE post_id = NEW.post_id
+    )
+    WHERE post_id = NEW.post_id;
+
+    RETURN NEW;
+
+END;
+$update_post_score$;
+
+
+
+---------------------------------------------------------------------
+-- TRIGGER: UPDATE SCORE WHEN VOTES CHANGE
+---------------------------------------------------------------------
+
+CREATE TRIGGER update_post_score
+AFTER INSERT OR UPDATE
+ON post_votes
+FOR EACH ROW
+EXECUTE FUNCTION update_post_score();
+
+
+
+---------------------------------------------------------------------
+-- FUNCTION: GET POSTS (PAGINATED)
+---------------------------------------------------------------------
+
+CREATE FUNCTION get_posts(page_number INT)
+RETURNS TABLE (
+    id UUID,
+    user_id UUID,
+    created_at TIMESTAMPTZ,
+    title TEXT,
+    score INT,
+    username TEXT
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+
+    RETURN QUERY
+    SELECT
+        posts.id,
+        posts.user_id,
+        posts.created_at,
+        post_contents.title,
+        post_score.score,
+        user_profiles.username
+
+    FROM posts
+
+    JOIN post_contents
+      ON posts.id = post_contents.post_id
+
+    JOIN post_score
+      ON posts.id = post_score.post_id
+
+    JOIN user_profiles
+      ON posts.user_id = user_profiles.user_id
+
+    WHERE posts.path ~ 'root'
+
+    ORDER BY post_score.score DESC,
+             posts.created_at DESC
+
+    LIMIT 10
+    OFFSET (page_number - 1) * 10;
+
+END;
 $$;
 
-create trigger trg_update_post_score
-after insert or update or delete
-on post_votes
-for each row
-execute procedure update_post_score();
+
+
+---------------------------------------------------------------------
+-- FUNCTION: CREATE NEW POST
+---------------------------------------------------------------------
+
+CREATE FUNCTION create_new_post(userId UUID, title TEXT, content TEXT)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+AS $$
+BEGIN
+
+  WITH inserted_post AS (
+      INSERT INTO posts (user_id, path)
+      VALUES ($1, 'root')
+      RETURNING id
+  )
+
+  INSERT INTO post_contents (post_id, title, content, user_id)
+  VALUES (
+      (SELECT id FROM inserted_post),
+      $2,
+      $3,
+      $1
+  );
+
+  RETURN TRUE;
+
+END;
+$$;
 
 
 
-/* ============================================================
-   ROW LEVEL SECURITY (SUPABASE MODEL)
-   ============================================================ */
+---------------------------------------------------------------------
+-- INITIALIZE POST SCORE
+---------------------------------------------------------------------
 
-/*
-  Supabase injects auth.uid()
-  from the user's JWT.
+CREATE FUNCTION initialize_post_score()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $initialize_post_score$
+BEGIN
 
-  RLS ensures:
-  Users can only modify their own rows.
-*/
+    INSERT INTO post_score (post_id, score)
+    VALUES (NEW.id, 0);
 
-alter table user_profiles enable row level security;
-alter table posts enable row level security;
-alter table post_contents enable row level security;
-alter table post_score enable row level security;
-alter table post_votes enable row level security;
+    RETURN NEW;
 
-
-/* ---------- PUBLIC READ POLICIES ---------- */
-
-create policy "public_read_profiles"
-on user_profiles for select
-using (true);
-
-create policy "public_read_posts"
-on posts for select
-using (true);
-
-create policy "public_read_contents"
-on post_contents for select
-using (true);
-
-create policy "public_read_scores"
-on post_score for select
-using (true);
-
-create policy "public_read_votes"
-on post_votes for select
-using (true);
-
-
-/* ---------- OWNERSHIP POLICIES ---------- */
-
-create policy "users_insert_own_profile"
-on user_profiles for insert
-to authenticated
-with check (auth.uid() = user_id);
-
-create policy "users_update_own_profile"
-on user_profiles for update
-to authenticated
-using (auth.uid() = user_id)
-with check (auth.uid() = user_id);
-
-create policy "users_insert_own_posts"
-on posts for insert
-to authenticated
-with check (auth.uid() = user_id);
-
-create policy "users_insert_own_content"
-on post_contents for insert
-to authenticated
-with check (auth.uid() = user_id);
-
-create policy "users_insert_own_votes"
-on post_votes for insert
-to authenticated
-with check (auth.uid() = user_id);
-
-create policy "users_update_own_votes"
-on post_votes for update
-to authenticated
-using (auth.uid() = user_id)
-with check (auth.uid() = user_id);
+END;
+$initialize_post_score$;
 
 
 
-/* ============================================================
-   REALTIME
-   ============================================================ */
+CREATE TRIGGER initialize_post_score
+AFTER INSERT
+ON posts
+FOR EACH ROW
+EXECUTE FUNCTION initialize_post_score();
 
-/*
-  We DO NOT drop Supabase’s publication.
 
-  That can break other tables.
 
-  Instead, we simply add post_score
-  so live vote updates can stream to clients.
-*/
+---------------------------------------------------------------------
+-- COMMENT RETRIEVAL
+---------------------------------------------------------------------
 
-alter publication supabase_realtime
-add table post_score;
+CREATE FUNCTION get_single_post_with_comments(post_id UUID)
+RETURNS TABLE (
+    id UUID,
+    author_name TEXT,
+    created_at TIMESTAMPTZ,
+    title TEXT,
+    content TEXT,
+    score INT,
+    path LTREE
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+
+    RETURN QUERY
+    SELECT
+      posts.id,
+      user_profiles.username,
+      posts.created_at,
+      post_contents.title,
+      post_contents.content,
+      post_score.score,
+      posts.path
+
+    FROM posts
+
+    JOIN post_contents
+      ON posts.id = post_contents.post_id
+
+    JOIN post_score
+      ON posts.id = post_score.post_id
+
+    JOIN user_profiles
+      ON posts.user_id = user_profiles.user_id
+
+    WHERE
+      posts.path <@
+      text2ltree(
+          CONCAT('root.',
+          REPLACE(CONCAT($1,''),'-','_'))
+      )
+    OR posts.id = $1;
+
+END;
+$$;
+
+
+
+---------------------------------------------------------------------
+-- CREATE COMMENT
+---------------------------------------------------------------------
+
+CREATE FUNCTION create_new_comment(
+    user_id UUID,
+    content TEXT,
+    path LTREE
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+AS $$
+BEGIN
+
+  WITH inserted_post AS (
+      INSERT INTO posts (user_id, path)
+      VALUES ($1, $3)
+      RETURNING id
+  )
+
+  INSERT INTO post_contents (post_id, title, content, user_id)
+  VALUES (
+      (SELECT id FROM inserted_post),
+      '',
+      $2,
+      $1
+  );
+
+  RETURN TRUE;
+
+END;
+$$;
+
+
+
+---------------------------------------------------------------------
+-- ENABLE ROW LEVEL SECURITY
+---------------------------------------------------------------------
+
+ALTER TABLE user_profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE posts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE post_contents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE post_score ENABLE ROW LEVEL SECURITY;
+ALTER TABLE post_votes ENABLE ROW LEVEL SECURITY;
+
+
+
+---------------------------------------------------------------------
+-- POLICIES
+---------------------------------------------------------------------
+
+CREATE POLICY "all can see"
+ON post_contents
+FOR SELECT
+TO public
+USING (true);
+
+CREATE POLICY "authors can create"
+ON post_contents
+FOR INSERT
+TO public
+WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "all can see"
+ON post_score
+FOR SELECT
+TO public
+USING (true);
+
+CREATE POLICY "all can see"
+ON post_votes
+FOR SELECT
+TO public
+USING (true);
+
+CREATE POLICY "owners can insert"
+ON post_votes
+FOR INSERT
+TO public
+WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "owners can update"
+ON post_votes
+FOR UPDATE
+TO public
+USING (auth.uid() = user_id)
+WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "all can see"
+ON posts
+FOR SELECT
+TO public
+USING (true);
+
+CREATE POLICY "owners can insert"
+ON posts
+FOR INSERT
+TO public
+WITH CHECK (auth.uid() = user_id);
+
+
+
+---------------------------------------------------------------------
+-- PROFILE POLICIES
+---------------------------------------------------------------------
+
+CREATE POLICY "profiles public"
+ON user_profiles
+FOR SELECT
+TO public
+USING (true);
+
+CREATE POLICY "users create profile"
+ON user_profiles
+FOR INSERT
+TO authenticated
+WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "users update profile"
+ON user_profiles
+FOR UPDATE
+TO authenticated
+USING (auth.uid() = user_id)
+WITH CHECK (auth.uid() = user_id);
+
+
+
+---------------------------------------------------------------------
+-- REALTIME PUBLICATION
+---------------------------------------------------------------------
+
+BEGIN;
+
+DROP PUBLICATION IF EXISTS supabase_realtime CASCADE;
+
+CREATE PUBLICATION supabase_realtime
+WITH (publish = 'insert, update, delete');
+
+ALTER PUBLICATION supabase_realtime
+ADD TABLE post_score;
+
+COMMIT;
