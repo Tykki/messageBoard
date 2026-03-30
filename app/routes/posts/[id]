@@ -1,0 +1,242 @@
+import {
+  useLoaderData,
+  useFetcher,
+  useRevalidator,
+} from "react-router";
+import { useMemo, useRef, useState } from "react";
+import { getSupaServer } from "./lib/supaServer";
+import type { Route } from "./routes/+types/post";
+import { timeAgo } from "./time-ago";
+import { UpVote } from "./UpVote";
+
+/**
+ * =========================================================
+ * TYPES
+ * =========================================================
+ */
+
+export interface Comment {
+  id: string;
+  author_name: string;
+  content: string;
+  score: number;
+  created_at: string;
+  path: string;
+  comments: Comment[];
+}
+
+/**
+ * =========================================================
+ * LOADER (Server-side data fetching)
+ * =========================================================
+ */
+export async function loader({ request, params }: Route.LoaderArgs) {
+  const { supaServer } = getSupaServer(request);
+
+  const postId = params.postId;
+
+  if (!postId) {
+    throw new Response("Post ID required", { status: 400 });
+  }
+
+  const {
+    data: { user },
+  } = await supaServer.auth.getUser();
+
+  /**
+   * Fetch post + comments
+   */
+  const { data, error } = await supaServer.rpc(
+    "get_single_post_with_comments",
+    { post_id: postId }
+  );
+
+  if (error || !data || data.length === 0) {
+    throw new Response("Post not found", { status: 404 });
+  }
+
+  const postMap = data.reduce((acc: any, item: any) => {
+    acc[item.id] = item;
+    return acc;
+  }, {});
+
+  const post = postMap[postId];
+  const comments = data.filter((x: any) => x.id !== postId);
+
+  /**
+   * Fetch votes (if logged in)
+   */
+  let myVotes: Record<string, "up" | "down"> = {};
+
+  if (user) {
+    const { data: votesData } = await supaServer
+      .from("post_votes")
+      .select("*")
+      .eq("user_id", user.id);
+
+    if (votesData) {
+      myVotes = votesData.reduce((acc: any, vote: any) => {
+        acc[vote.post_id] = vote.vote_type;
+        return acc;
+      }, {});
+    }
+  }
+
+  return { post, comments, myVotes, user };
+}
+
+/**
+ * =========================================================
+ * ACTION (Voting + Comment Creation)
+ * =========================================================
+ */
+export async function action({ request }: Route.ActionArgs) {
+  const { supaServer } = getSupaServer(request);
+  const formData = await request.formData();
+
+  const intent = formData.get("intent");
+
+  const {
+    data: { user },
+  } = await supaServer.auth.getUser();
+
+  if (!user) {
+    return { error: "Not authenticated" };
+  }
+
+  /**
+   * ---------------------------
+   * HANDLE VOTE
+   * ---------------------------
+   */
+  if (intent === "vote") {
+    const postId = formData.get("postId");
+    const voteType = formData.get("voteType");
+
+    if (typeof postId !== "string" || typeof voteType !== "string") {
+      return { error: "Invalid vote" };
+    }
+
+    const { error } = await supaServer.rpc("cast_vote", {
+      post_id: postId,
+      user_id: user.id,
+      vote_type: voteType,
+    });
+
+    if (error) {
+      console.error(error);
+      return { error: "Vote failed" };
+    }
+
+    return { success: true };
+  }
+
+  /**
+   * ---------------------------
+   * HANDLE COMMENT CREATION
+   * ---------------------------
+   */
+  if (intent === "comment") {
+    const content = formData.get("content");
+    const parentPath = formData.get("parentPath");
+    const parentId = formData.get("parentId");
+
+    if (
+      typeof content !== "string" ||
+      typeof parentPath !== "string" ||
+      typeof parentId !== "string"
+    ) {
+      return { error: "Invalid comment" };
+    }
+
+    const { error } = await supaServer.rpc("create_new_comment", {
+      user_id: user.id,
+      content,
+      path: `${parentPath}.${parentId.replaceAll("-", "_")}`,
+    });
+
+    if (error) {
+      console.error(error);
+      return { error: "Failed to create comment" };
+    }
+
+    return { success: true };
+  }
+
+  return { error: "Unknown action" };
+}
+
+/**
+ * =========================================================
+ * MAIN COMPONENT
+ * =========================================================
+ */
+export default function PostView() {
+  const { post, comments, myVotes, user } =
+    useLoaderData<typeof loader>();
+
+  const revalidator = useRevalidator();
+
+  const nestedComments = useMemo(
+    () => unsortedCommentsToNested(comments),
+    [comments]
+  );
+
+  return (
+    <div className="post-detail-outer-container">
+      <div className="post-detail-inner-container">
+        <PostBody
+          post={post}
+          myVotes={myVotes}
+          user={user}
+          onUpdate={() => revalidator.revalidate()}
+        />
+
+        {nestedComments.map((comment) => (
+          <CommentView
+            key={comment.id}
+            comment={comment}
+            myVotes={myVotes}
+            user={user}
+            onUpdate={() => revalidator.revalidate()}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * =========================================================
+ * POST BODY
+ * =========================================================
+ */
+function PostBody({ post, myVotes, user, onUpdate }: any) {
+  const fetcher = useFetcher();
+
+  return (
+    <div className="post-detail-body">
+      <VoteBlock
+        id={post.id}
+        score={post.score}
+        myVote={myVotes?.[post.id]}
+      />
+
+      <p>
+        Posted By {post.author_name} {timeAgo(post.created_at)} ago
+      </p>
+
+      <h3 className="text-2xl">{post.title}</h3>
+
+      <p className="post-detail-content">{post.content}</p>
+
+      {user && (
+        <CreateComment parent={post} onSuccess={onUpdate} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * =========================================================
+ * COMMENT*

@@ -6,6 +6,25 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[]
 
+export interface GetPostsResponse {
+  created_at: string;
+  id: string;
+  score: number;
+  title: string;
+  user_id: string;
+  username: string;
+}
+
+export interface GetSinglePostWithCommentResponse {
+  author_name: string;
+  content: string;
+  created_at: string;
+  id: string;
+  path: string;
+  score: number;
+  title: string;
+}
+
 export type Database = {
   graphql_public: {
     Tables: {
@@ -34,6 +53,114 @@ export type Database = {
   }
   public: {
     Tables: {
+      post_contents: {
+        Row: {
+          content: string | null
+          created_at: string
+          id: string
+          post_id: string
+          title: string | null
+          user_id: string
+        }
+        Insert: {
+          content?: string | null
+          created_at?: string
+          id?: string
+          post_id: string
+          title?: string | null
+          user_id: string
+        }
+        Update: {
+          content?: string | null
+          created_at?: string
+          id?: string
+          post_id?: string
+          title?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "post_contents_post_id_fkey"
+            columns: ["post_id"]
+            isOneToOne: false
+            referencedRelation: "posts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      post_score: {
+        Row: {
+          post_id: string
+          score: number
+        }
+        Insert: {
+          post_id: string
+          score: number
+        }
+        Update: {
+          post_id?: string
+          score?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "post_score_post_id_fkey"
+            columns: ["post_id"]
+            isOneToOne: true
+            referencedRelation: "posts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      post_votes: {
+        Row: {
+          id: string
+          post_id: string
+          user_id: string
+          vote_type: Database["public"]["Enums"]["vote_type_enum"]
+        }
+        Insert: {
+          id?: string
+          post_id: string
+          user_id: string
+          vote_type: Database["public"]["Enums"]["vote_type_enum"]
+        }
+        Update: {
+          id?: string
+          post_id?: string
+          user_id?: string
+          vote_type?: Database["public"]["Enums"]["vote_type_enum"]
+        }
+        Relationships: [
+          {
+            foreignKeyName: "post_votes_post_id_fkey"
+            columns: ["post_id"]
+            isOneToOne: false
+            referencedRelation: "posts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      posts: {
+        Row: {
+          created_at: string
+          id: string
+          path: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          path: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          path?: unknown
+          user_id?: string
+        }
+        Relationships: []
+      }
       user_profiles: {
         Row: {
           user_id: string
@@ -51,13 +178,66 @@ export type Database = {
       }
     }
     Views: {
-      [_ in never]: never
+      realtime_tables: {
+        Row: {
+          in_publication: boolean | null
+          marked_realtime: boolean | null
+          table_name: string | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
-      [_ in never]: never
+      add_realtime_marked_tables: {
+        Args: { target_schema: string }
+        Returns: undefined
+      }
+      create_new_comment: {
+        Args: { content: string; path: string; user_id: string }
+        Returns: boolean
+      }
+      create_new_post: {
+        Args: { content: string; title: string; userid: string }
+        Returns: boolean
+      }
+      disable_realtime: { Args: { table_ref: unknown }; Returns: undefined }
+      enable_realtime: { Args: { table_ref: unknown }; Returns: undefined }
+      get_posts: {
+        Args: { page_number: number }
+        Returns: {
+          created_at: string
+          id: string
+          score: number
+          title: string
+          user_id: string
+          username: string
+        }[]
+      }
+      get_single_post_with_comments: {
+        Args: { post_id: string }
+        Returns: {
+          author_name: string
+          content: string
+          created_at: string
+          id: string
+          path: string
+          score: number
+          title: string
+        }[]
+      }
+      realtime_status: {
+        Args: { target_schema: string }
+        Returns: {
+          in_publication: boolean
+          marked_realtime: boolean
+          table_name: string
+        }[]
+      }
+      text2ltree: { Args: { "": string }; Returns: unknown }
+      uuidv7: { Args: never; Returns: string }
     }
     Enums: {
-      [_ in never]: never
+      vote_type_enum: "up" | "down"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -187,7 +367,9 @@ export const Constants = {
     Enums: {},
   },
   public: {
-    Enums: {},
+    Enums: {
+      vote_type_enum: ["up", "down"],
+    },
   },
 } as const
 

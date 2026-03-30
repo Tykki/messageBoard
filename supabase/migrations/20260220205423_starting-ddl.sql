@@ -1,3 +1,25 @@
+CREATE OR REPLACE FUNCTION uuidv7()
+RETURNS uuid AS $$
+DECLARE
+    unix_ts_ms bytea;
+    uuid_bytes bytea;
+BEGIN
+    -- Get current UNIX timestamp in milliseconds
+    unix_ts_ms := decode(lpad(hex(floor(extract(epoch from clock_timestamp()) * 1000)::bigint), 12, '0'), 'hex');
+    
+    -- Generate random bytes for the remaining 10 bytes
+    uuid_bytes := unix_ts_ms || gen_random_bytes(10);
+    
+    -- Set version to 7 (bits 48-51)
+    uuid_bytes := set_byte(uuid_bytes, 6, (get_byte(uuid_bytes, 6) & 15) | 112);
+    
+    -- Set variant to 2 (bits 64-65)
+    uuid_bytes := set_byte(uuid_bytes, 8, (get_byte(uuid_bytes, 8) & 63) | 128);
+    
+    RETURN encode(uuid_bytes, 'hex')::uuid;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
 ---------------------------------------------------------------------
 -- EXTENSIONS
 ---------------------------------------------------------------------
@@ -71,7 +93,7 @@ CREATE TABLE posts (
     -- hierarchical comment path
     path LTREE NOT NULL
 );
-SELECT enable_realtime('posts');
+
 
 
 ---------------------------------------------------------------------
@@ -106,7 +128,7 @@ CREATE TABLE post_score (
 
     score INTEGER NOT NULL
 );
-SELECT enable_realtime('post_score');
+
 
 -- Index used when sorting posts by score
 CREATE INDEX idx_post_score_value
@@ -134,7 +156,7 @@ CREATE TABLE post_contents (
 
     created_at TIMESTAMPTZ DEFAULT now() NOT NULL
 );
-SELECT enable_realtime('post_contents');
+
 
 -- Index to quickly retrieve content for posts
 CREATE INDEX idx_post_contents_post_id
@@ -162,7 +184,7 @@ CREATE TABLE post_votes (
     -- prevents duplicate votes
     UNIQUE (post_id, user_id)
 );
-SELECT enable_realtime('post_votes');
+
 
 -- Index used to aggregate vote totals faster
 CREATE INDEX idx_post_votes_post
@@ -807,6 +829,13 @@ $$;
 
 CREATE OR REPLACE VIEW realtime_tables AS
 SELECT * FROM realtime_status('public');
+
+
+
+SELECT enable_realtime('posts');
+SELECT enable_realtime('post_score');
+SELECT enable_realtime('post_contents');
+SELECT enable_realtime('post_votes');
 
 ---------------------------------------------------------------------
 -- ENABLE ROW LEVEL SECURITY
